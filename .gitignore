@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.keras
+*.joblib
 .env
 .venv/
 venv/

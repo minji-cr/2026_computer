@@ -1,36 +1,37 @@
-"""LSTM 기반 정책 적용 후 에너지 비용 예측 모델."""
+"""정책 적용 후 에너지 비용 예측 모델 (scikit-learn).
+
+기존 LSTM을 대체하여 과거 6개월 시계열을 펼친 특징으로 다음 달 비용을
+예측한다. 공개 API는 그대로 유지한다.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import joblib
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
+from sklearn.neural_network import MLPRegressor
 
 from utils.calculations import HouseholdInput, predict_savings
 
 MODEL_DIR = Path(__file__).resolve().parent
-LSTM_PATH = MODEL_DIR / "lstm_predictor.keras"
+LSTM_PATH = MODEL_DIR / "cost_predictor.joblib"
 
 SEQ_LEN = 6
 FEATURES_PER_STEP = 3  # electric, fuel, total
+INPUT_DIM = SEQ_LEN * FEATURES_PER_STEP
 
 
-def build_lstm_model() -> keras.Model:
-    model = keras.Sequential(
-        [
-            keras.layers.Input(shape=(SEQ_LEN, FEATURES_PER_STEP)),
-            keras.layers.LSTM(32, return_sequences=True),
-            keras.layers.Dropout(0.2),
-            keras.layers.LSTM(16),
-            keras.layers.Dense(8, activation="relu"),
-            keras.layers.Dense(3, activation="linear"),
-        ],
-        name="cost_lstm",
+def build_lstm_model() -> MLPRegressor:
+    return MLPRegressor(
+        hidden_layer_sizes=(32, 16, 8),
+        activation="relu",
+        solver="adam",
+        alpha=1e-4,
+        batch_size=64,
+        max_iter=300,
+        random_state=42,
     )
-    model.compile(optimizer="adam", loss="mse", metrics=["mae"])
-    return model
 
 
 def generate_lstm_training_data(n_samples: int = 3000) -> tuple[np.ndarray, np.ndarray]:
@@ -58,25 +59,25 @@ def generate_lstm_training_data(n_samples: int = 3000) -> tuple[np.ndarray, np.n
         X[i] = history[:SEQ_LEN]
         y[i] = history[SEQ_LEN]
 
-    return X, y
+    return X.reshape(n_samples, INPUT_DIM), y
 
 
-def train_and_save_lstm() -> keras.Model:
+def train_and_save_lstm() -> MLPRegressor:
     X, y = generate_lstm_training_data()
     model = build_lstm_model()
-    model.fit(X, y, epochs=40, batch_size=64, validation_split=0.2, verbose=1)
-    model.save(LSTM_PATH)
+    model.fit(X, y)
+    joblib.dump(model, LSTM_PATH)
     return model
 
 
-def load_lstm_model() -> keras.Model:
+def load_lstm_model() -> MLPRegressor:
     if not LSTM_PATH.exists():
         return train_and_save_lstm()
-    return keras.models.load_model(LSTM_PATH)
+    return joblib.load(LSTM_PATH)
 
 
 def _build_sequence(household: HouseholdInput) -> np.ndarray:
-    """가구 정보로 6개월 시계열 시퀀스 생성."""
+    """가구 정보로 6개월 시계열 시퀀스 생성 (펼친 형태로 반환)."""
     rng = np.random.default_rng(int(household.monthly_income) % 10000)
     seq = np.zeros((SEQ_LEN, FEATURES_PER_STEP), dtype=np.float32)
 
@@ -88,17 +89,17 @@ def _build_sequence(household: HouseholdInput) -> np.ndarray:
         total = electric + household.monthly_water
         seq[i] = [electric / 100_000, fuel / 100_000, total / 100_000]
 
-    return seq.reshape(1, SEQ_LEN, FEATURES_PER_STEP)
+    return seq.reshape(1, INPUT_DIM)
 
 
 def predict_cost_with_lstm(
     household: HouseholdInput,
     policy: dict | None = None,
 ) -> dict:
-    """LSTM으로 정책 적용 전·후 비용 예측."""
+    """정책 적용 전·후 비용 예측."""
     model = load_lstm_model()
     sequence = _build_sequence(household)
-    raw_pred = model.predict(sequence, verbose=0)[0]
+    raw_pred = model.predict(sequence)[0]
 
     baseline = predict_savings(household, {
         "electric_discount_rate": 0,

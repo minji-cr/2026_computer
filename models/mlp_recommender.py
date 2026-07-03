@@ -1,38 +1,33 @@
-"""MLP 기반 국가 복지 정책 추천 모델."""
+"""MLP 기반 국가 복지 정책 추천 모델 (scikit-learn)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-from tensorflow import keras
+from sklearn.neural_network import MLPRegressor
 
 from utils.calculations import HouseholdInput, check_policy_eligibility
 from utils.data_loader import load_policies
 
 MODEL_DIR = Path(__file__).resolve().parent
-MLP_PATH = MODEL_DIR / "mlp_recommender.keras"
+MLP_PATH = MODEL_DIR / "mlp_recommender.joblib"
 
 FEATURE_DIM = 7
 
 
-def build_mlp_model(num_policies: int) -> keras.Model:
-    model = keras.Sequential(
-        [
-            keras.layers.Input(shape=(FEATURE_DIM,)),
-            keras.layers.Dense(64, activation="relu"),
-            keras.layers.Dropout(0.2),
-            keras.layers.Dense(32, activation="relu"),
-            keras.layers.Dropout(0.2),
-            keras.layers.Dense(16, activation="relu"),
-            keras.layers.Dense(num_policies, activation="sigmoid"),
-        ],
-        name="policy_mlp",
+def build_mlp_model() -> MLPRegressor:
+    return MLPRegressor(
+        hidden_layer_sizes=(64, 32, 16),
+        activation="relu",
+        solver="adam",
+        alpha=1e-4,
+        batch_size=64,
+        max_iter=300,
+        random_state=42,
     )
-    model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
-    return model
 
 
 def generate_training_data(
@@ -83,19 +78,19 @@ def generate_training_data(
     return X, y
 
 
-def train_and_save_mlp() -> keras.Model:
+def train_and_save_mlp() -> MLPRegressor:
     policies_df = load_policies()
     X, y = generate_training_data(policies_df)
-    model = build_mlp_model(len(policies_df))
-    model.fit(X, y, epochs=50, batch_size=64, validation_split=0.2, verbose=1)
-    model.save(MLP_PATH)
+    model = build_mlp_model()
+    model.fit(X, y)
+    joblib.dump(model, MLP_PATH)
     return model
 
 
-def load_mlp_model() -> keras.Model:
+def load_mlp_model() -> MLPRegressor:
     if not MLP_PATH.exists():
         return train_and_save_mlp()
-    return keras.models.load_model(MLP_PATH)
+    return joblib.load(MLP_PATH)
 
 
 def get_recommendation_reason(
@@ -133,7 +128,7 @@ def recommend_policies(
     policies_df = load_policies()
     model = load_mlp_model()
     features = np.array([household.to_feature_vector()], dtype=np.float32)
-    predictions = model.predict(features, verbose=0)[0]
+    predictions = np.clip(model.predict(features)[0], 0.0, 1.0)
 
     results = []
     for idx, (_, policy) in enumerate(policies_df.iterrows()):
